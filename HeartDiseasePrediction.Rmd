@@ -1,0 +1,236 @@
+---
+title: "Heart Disease Prediction"
+output: html_notebook
+---
+
+
+```{r}
+library(ggplot2)
+library(PerformanceAnalytics)
+library(dplyr)
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(caret)
+```
+
+# Import Data
+```{r}
+data <- read.csv('framingham.csv')
+head(data)
+summary(data)
+```
+## Remove Incomplete Rows
+```{r}
+data <- data[complete.cases(data), ]
+summary(data)
+```
+
+# Exploratory Data Analysis
+## Factor Distribution & Independence
+```{r}
+
+colSums(is.na(data))
+for(i in 1:ncol(data)) {
+  hist(data[,i], main = colnames(data)[i])
+}
+```
+```{r}
+dataNum = data[c("age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose")]
+chart.Correlation(data, method="pearson", histogram=TRUE, pch=16)
+
+```
+## Removing Dependent Factors
+```{r}
+data <- data %>%
+  select(-c("currentSmoker", "prevalentHyp", "diabetes", "diaBP"))
+head(data)
+```
+
+
+## Outlier Cleaning
+There are some numeric factors that have some outliers: cigsPerDay, totChol, sysBp,
+diaBP, BMI, heartRate, glucose. We should filter out those cases.
+```{r}
+table(data$TenYearCHD)
+data <- data %>%
+  filter(cigsPerDay<=35 & 
+           totChol<=420 & 
+           sysBP<220 & 
+           BMI<=40 & 
+           heartRate<=110 & 
+           glucose<=150)
+table(data$TenYearCHD)
+```
+## Reassign variables from integers to factors
+```{r}
+var_factors <- c('male', 
+                 'prevalentStroke',
+                 'education',
+                 'BPMeds',
+                 'TenYearCHD')
+
+data[var_factors] <- lapply(data[var_factors], FUN=as.factor)
+colnames(data)[1] <- "gender"
+levels(data$gender) <- c('female', 'male') 
+levels(data$prevalentStroke) <- c('no stroke', 'stroke') 
+levels(data$TenYearCHD) <- c('no CHD', 'CHD') 
+
+
+```
+
+## One Factor Analysis
+```{r}
+ggplot(data, aes(fill=as.factor(TenYearCHD), x=glucose)) + 
+  geom_histogram(color="gray90")
+```
+```{r}
+ggplot(data, aes(fill=TenYearCHD, x=cigsPerDay)) + 
+  geom_histogram(color="gray90", bins=4) +
+  facet_wrap(~gender)
+```
+
+```{r}
+data %>%
+  ggplot(aes(glucose, fill = TenYearCHD)) +
+  geom_histogram(position = 'fill', bins = 5) + 
+  facet_wrap(~ gender) 
+
+```
+```{r}
+data %>%
+  ggplot(aes(prevalentStroke, fill=TenYearCHD)) + 
+  geom_bar(position = "fill") #position "fill" enforces proportions
+```
+
+
+```{r}
+data %>%
+  ggplot(aes(prevalentStroke, fill=TenYearCHD)) + 
+  geom_bar(position = "fill") +
+facet_wrap(~ gender) 
+```
+```{r}
+data %>%
+  ggplot(aes(sysBP, fill=TenYearCHD)) + 
+  geom_histogram(position = "fill", bins=10) #position "fill" enforces proportions
+```
+```{r}
+data %>%
+  ggplot(aes(sysBP, fill=TenYearCHD)) + 
+  geom_histogram(position = "fill", bins=5) +
+  facet_wrap(~glucose>140)
+```
+```{r}
+data %>%
+  ggplot(aes(age, fill=TenYearCHD)) + 
+  geom_histogram(bins=5) +
+  facet_wrap(~ gender)
+```
+```{r}
+data %>%
+  ggplot(aes(totChol, fill=TenYearCHD)) + 
+  geom_histogram(bins=15) +
+  facet_wrap(~ gender)
+```
+```{r}
+data %>%
+  ggplot(aes(age, TenYearCHD, fill=TenYearCHD)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender) +
+  coord_flip()
+```
+```{r}
+data %>%
+  ggplot(aes(sysBP, TenYearCHD, fill=TenYearCHD)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender) +
+  coord_flip()
+```
+
+# Fitting Models
+## Sampling
+```{r}
+
+set.seed(42)
+split <- sample.split(Y=data$TenYearCHD, SplitRatio = 0.7) #boolean vector, not indexes
+train <- data[split,]
+test <- data[!split,]
+```
+```{r}
+table(train$TenYearCHD)[1]/nrow(train)
+table(test$TenYearCHD)[1]/nrow(test)
+```
+```{r}
+set.seed(99)
+split <- sample.split(Y=data$TenYearCHD, SplitRatio = 0.7) #boolean vector, not indexes
+train <- data[split,]
+test <- data[!split,]
+train <- upSample(train, train$TenYearCHD, list=F)
+train <- train[,1:ncol(train)-1]
+
+```
+```{r}
+table(train$TenYearCHD)[1]/nrow(train)
+table(test$TenYearCHD)[1]/nrow(test)
+```
+
+## Logistic
+
+### One Factor Regression
+```{r}
+modelAge = glm(TenYearCHD~age,data=train,family='binomial')
+summary(modelAge)
+```
+```{r}
+modelBP = glm(TenYearCHD~sysBP,data=train,family='binomial')
+summary(modelBP)
+```
+### All Factor Regression
+```{r}
+modelLogistic = glm(TenYearCHD~.,data=train,family='binomial', control = list(maxit = 50))
+summary(modelLogistic)
+cutoff <- 0.53
+```
+```{r}
+predLogisticTrain <- predict(modelLogistic, type='response', train)
+predLogisticTrainBinary <- ifelse(predLogisticTrain > cutoff, 1, 0)
+confusion_matrix <- table(what_happened = train$TenYearCHD, model_predicts = predLogisticTrainBinary)
+# confusion_matrix
+accuracy <- sum(confusion_matrix[1,1],confusion_matrix[2,2])/nrow(train)
+precision <- confusion_matrix[2,2]/sum(confusion_matrix[2,2],confusion_matrix[1,2])
+recall <- confusion_matrix[2,2]/sum(confusion_matrix[2,2], confusion_matrix[2,1])
+F1 = 2*((recall * precision) / (recall + precision))
+
+print("Accuracy"); print(sprintf("%.3f", accuracy));
+print("Precision"); print(sprintf("%.3f", precision))
+print("Recall"); print(sprintf("%.3f", recall))
+print("F1"); print(sprintf("%.3f", F1))
+```
+```{r}
+predLogisticTest <- predict(modelLogistic, type='response', test)
+predLogisticTestBinary <- ifelse(predLogisticTest > cutoff, 1, 0)
+confusion_matrix <- table(what_happened = test$TenYearCHD, model_predicts = predLogisticTestBinary)
+#confusion_matrix
+accuracy <- sum(confusion_matrix[1,1],confusion_matrix[2,2])/nrow(test)
+precision <- confusion_matrix[2,2]/sum(confusion_matrix[2,2],confusion_matrix[1,2])
+recall <- confusion_matrix[2,2]/sum(confusion_matrix[2,2], confusion_matrix[2,1])
+F1 = 2*((recall * precision) / (recall + precision))
+
+print("Accuracy"); print(sprintf("%.3f", accuracy)); 
+print("Precision"); print(sprintf("%.3f", precision))
+print("Recall"); print(sprintf("%.3f", recall))
+print("F1"); print(sprintf("%.3f", F1))
+```
+
+
+## Trees
+
+### Decision Tree
+```{r}
+set.seed(22)
+tree <- rpart(TenYearCHD~sysBP+gender+age+education+cigsPerDay+BPMeds+prevalentStroke+totChol+BMI+heartRate+glucose, data=train, method='class', cp=0.015, minsplit=20)
+
+rpart.plot(tree, varlen = 10 , tweak = 1.2, extra='auto', box.palette = "auto", type=2)
+```
+
